@@ -5,7 +5,7 @@
 ## Overview
 This project is a web application that performs real-time object detection on video and image inputs to detect helmets and recognize license plate numbers on vehicles. The system automatically issues e-challans (fines) to violators by identifying traffic violations such as riding without a helmet. The following technologies and components have been used in the project:
 
-- **MERN Stack**: For building the web application.
+- **MERN Stack**: For building the web application. 
   - **MongoDB**: To store detected violations and user information.
   - **Express**: To handle backend APIs.
   - **React**: For the front-end user interface.
