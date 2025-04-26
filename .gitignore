@@ -41,3 +41,14 @@ weights/
 # OS specific files
 .DS_Store
 Thumbs.db
+
+# From your project root (D:\New folder\TVM)
+
+# 1. Untrack the backend .env but leave it on disk
+git rm --cached backend/.env
+
+# 2. Commit that removal
+git commit -m "Stop tracking backend/.env"
+
+# 3. Push your cleaned commit
+git push origin main
