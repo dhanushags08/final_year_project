@@ -1,118 +1,92 @@
-import base64
-from flask import Flask, request, jsonify, send_file
-import cv2
-import math
-import cvzone
+# forimage.py
+from dotenv import load_dotenv
+load_dotenv()
+
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import os, tempfile, base64, cv2, math
 import torch
 import easyocr
 from ultralytics import YOLO
-import os
-import io
-import tempfile
-from flask_cors import CORS
 
+# Load environment variables
+YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "weights/best.pt")
+
+# Initialize Flask app and CORS
 app = Flask(__name__)
-CORS(app, resources={r"/detect": {"origins": "*"}})
+CORS(app)
 
+# Load YOLO model and OCR reader once
+detector = YOLO(YOLO_MODEL_PATH)
+reader = easyocr.Reader(['en'], gpu=torch.cuda.is_available())
+
+# Class names matching the model's training labels
+classNames = ["with helmet", "without helmet", "rider", "number plate"]
+
+@app.route('/', methods=['GET'])
+def health_check():
+    return "Detector is running. POST images to /detect", 200
 
 @app.route('/detect', methods=['POST'])
 def detect_objects():
-    # Receive image file from the request
+    # Ensure an image file was sent
+    if 'image' not in request.files:
+        return jsonify({"error": "No image provided"}), 400
     image_file = request.files['image']
 
-    # Save the received image to a temporary directory
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp_image:
-        temp_image_path = temp_image.name
-        # Save the received image to the temporary file
-        image_file.save(temp_image_path)
+    # Save uploaded image to a temp file
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+        tmp.write(image_file.read())
+        tmp_path = tmp.name
 
-    # Load YOLO model with class names
-    model = YOLO("best.pt")
-    classNames = ["with helmet", "without helmet", "rider", "number plate"]
-
-    # Load the input image
-    img = cv2.imread(temp_image_path)
+    # Read image from disk
+    img = cv2.imread(tmp_path)
+    os.remove(tmp_path)
+    if img is None:
+        return jsonify({"error": "Invalid image file"}), 400
 
     # Perform object detection
-    results = model(img)
+    results = detector(img)
 
-    # Initialize number_plate_text outside the loop
-    number_plate_text = ""
+    # Tracking variables
+    plate_text = ""
+    helmet_violation = False
 
-    # Flag to indicate if a rider without a helmet is detected
-    rider_without_helmet_detected = False
+    # Parse detection results
+    for res in results:
+        for box in res.boxes.data.tolist():
+            # box: [x1, y1, x2, y2, confidence, class]
+            x1, y1, x2, y2, conf, cls = box
+            x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+            cls = int(cls)
+            label = classNames[cls]
 
-    # Iterate over the results list
-    for r in results:
-        boxes = r.boxes
-        xy = boxes.xyxy
-        confidences = boxes.conf
-        classes = boxes.cls
-        new_boxes = torch.cat((xy, confidences.unsqueeze(1), classes.unsqueeze(1)), 1)
+            # Draw bounding box and label
+            color = (0, 255, 0) if cls == 0 else ((0, 0, 255) if cls in [1, 3] else (255, 0, 0))
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(img, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
-        # Extract bounding boxes, class IDs, and confidence scores
-        for box in new_boxes:
-            x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-            conf = math.ceil((box[4] * 100)) / 100
-            cls = int(box[5])
+            # Violation detection logic
+            if cls == 1:
+                helmet_violation = True
+            if cls == 3 and helmet_violation:
+                # Crop number plate and extract text
+                plate_crop = img[y1:y2, x1:x2]
+                texts = reader.readtext(plate_crop)
+                plate_text = "".join([t[1] for t in texts]).replace(" ", "")
 
-            # Handle detections for riders without helmets
-            if cls == 2 and conf > 0.5:  # Rider
-                label = classNames[cls]
-                rider_img = img[y1:y2, x1:x2]
+    if not plate_text:
+        plate_text = "No number plate detected"
 
-                # Draw bounding box and label on the original image
-                cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                cv2.putText(img, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
-
-                # Flag that a rider without a helmet is detected
-                rider_without_helmet_detected = True
-
-            # Handle detections for without helmet and number plate
-            elif cls == 1 or cls == 3:  # Without helmet or number plate
-                label = classNames[cls]
-
-                cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                cv2.putText(img, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-
-                # Store the cropped number plate image when a rider without a helmet is detected
-                if cls == 3 and rider_without_helmet_detected:
-                    # Define the filename to save the cropped image
-                    filename = "cropped_number_plate.jpg"
-
-                    # Crop the region of interest (number plate)
-                    number_plate_img = img[y1:y2, x1:x2]
-
-                    # Save the cropped number plate image
-                    cv2.imwrite(filename, number_plate_img)
-
-                    # Use EasyOCR to extract the number plate text
-                    reader = easyocr.Reader(['en'])
-                    number_plate_text = reader.readtext(number_plate_img)
-
-                    # Extract and print only the text from the number plate detection
-                    number_plate_text = ''.join([text[1] for text in number_plate_text])
-                    number_plate_text = number_plate_text.replace(" ", "")  # Remove white spaces
-                    print("Number Plate:", number_plate_text)
-
-    # Delete the temporary image file
-    os.remove(temp_image_path)
-
-    # Convert the image to base64 string
+    # Convert annotated image to base64
     _, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 90])
-    img_base64 = base64.b64encode(buffer).decode('utf-8')
+    img_b64 = base64.b64encode(buffer).decode('utf-8')
 
-    # If number_plate_text is still empty, handle it
-    if not number_plate_text:
-        number_plate_text = "No number plate detected"
-
-    response_data = {
-        'image': img_base64,
-        'number_plate_text': number_plate_text
-    }
-
-    return jsonify(response_data)
-
+    return jsonify({
+        "image": img_b64,
+        "number_plate_text": plate_text
+    })
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5003)
+    port = int(os.getenv("PORT", 5003))
+    app.run(host='0.0.0.0', port=port)

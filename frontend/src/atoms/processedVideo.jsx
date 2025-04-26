@@ -1,17 +1,12 @@
-import { atom } from 'recoil';
+import { atom } from "recoil";
+
+export const fileState = atom({ key: "fileState", default: null });
 export const processedVideoState = atom({
-  key: 'processedVideoState', // Unique ID for this atom
-  default: null, // Initial value of the atom
+  key: "processedVideoState",
+  default: null,
 });
+export const imageState = atom({ key: "imageState", default: null });
 export const processedImageState = atom({
-  key: 'processedImageState', // Unique ID for this atom
-  default: null, // Initial value of the atom
+  key: "processedImageState",
+  default: null,
 });
-export const fileState=atom({
-    key:'file',
-    default:null
-})
-export const imageState=atom({
-  key:'img',
-  default:null
-})
