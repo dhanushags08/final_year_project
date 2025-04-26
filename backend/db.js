@@ -1,4 +1,4 @@
-// db.js
+// backend/db.js
 const mongoose = require("mongoose");
 require("dotenv").config();
 
@@ -27,6 +27,11 @@ const UserSchema = new mongoose.Schema({
   phonenumber: {
     type: String,
     required: true,
+  },
+  // New field: timestamps of each SMS sent
+  smsLog: {
+    type: [Date],
+    default: [],
   },
 });
 

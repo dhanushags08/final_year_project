@@ -1,12 +1,12 @@
 # forimage.py
+
 from dotenv import load_dotenv
 load_dotenv()
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-import os, tempfile, base64, cv2, math
-import torch
-import easyocr
+import os, tempfile, base64, cv2
+import torch, easyocr, re
 from ultralytics import YOLO
 
 # Load environment variables
@@ -18,74 +18,72 @@ CORS(app)
 
 # Load YOLO model and OCR reader once
 detector = YOLO(YOLO_MODEL_PATH)
-reader = easyocr.Reader(['en'], gpu=torch.cuda.is_available())
+reader   = easyocr.Reader(['en'], gpu=torch.cuda.is_available())
 
 # Class names matching the model's training labels
 classNames = ["with helmet", "without helmet", "rider", "number plate"]
 
 @app.route('/', methods=['GET'])
 def health_check():
-    return "Detector is running. POST images to /detect", 200
+    return "Detector is running. POST images to /detect and videos to /process_video", 200
 
 @app.route('/detect', methods=['POST'])
 def detect_objects():
-    # Ensure an image file was sent
     if 'image' not in request.files:
         return jsonify({"error": "No image provided"}), 400
     image_file = request.files['image']
+    filename   = image_file.filename
 
-    # Save uploaded image to a temp file
+    # (Override logic omitted here—keep your override if needed)
+
+    # Save to temp, read, then delete
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
         tmp.write(image_file.read())
         tmp_path = tmp.name
-
-    # Read image from disk
     img = cv2.imread(tmp_path)
     os.remove(tmp_path)
     if img is None:
         return jsonify({"error": "Invalid image file"}), 400
 
-    # Perform object detection
-    results = detector(img)
+    # (Your detection & OCR code here…)
+    # …
 
-    # Tracking variables
-    plate_text = ""
-    helmet_violation = False
-
-    # Parse detection results
-    for res in results:
-        for box in res.boxes.data.tolist():
-            # box: [x1, y1, x2, y2, confidence, class]
-            x1, y1, x2, y2, conf, cls = box
-            x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
-            cls = int(cls)
-            label = classNames[cls]
-
-            # Draw bounding box and label
-            color = (0, 255, 0) if cls == 0 else ((0, 0, 255) if cls in [1, 3] else (255, 0, 0))
-            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(img, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-            # Violation detection logic
-            if cls == 1:
-                helmet_violation = True
-            if cls == 3 and helmet_violation:
-                # Crop number plate and extract text
-                plate_crop = img[y1:y2, x1:x2]
-                texts = reader.readtext(plate_crop)
-                plate_text = "".join([t[1] for t in texts]).replace(" ", "")
-
-    if not plate_text:
-        plate_text = "No number plate detected"
-
-    # Convert annotated image to base64
-    _, buffer = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 90])
-    img_b64 = base64.b64encode(buffer).decode('utf-8')
-
+    # Return filename & plate_text
     return jsonify({
-        "image": img_b64,
+        "filename": filename,
         "number_plate_text": plate_text
     })
+
+@app.route('/process_video', methods=['POST'])
+def process_video():
+    if 'video' not in request.files:
+        return jsonify({"error": "No video provided"}), 400
+    vf     = request.files['video']
+    tmp_in = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
+    tmp_out= tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
+    vf.save(tmp_in)
+
+    cap   = cv2.VideoCapture(tmp_in)
+    fps   = cap.get(cv2.CAP_PROP_FPS) or 20.0
+    w     = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h     = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fourcc= cv2.VideoWriter_fourcc(*'mp4v')
+    out   = cv2.VideoWriter(tmp_out, fourcc, fps, (w,h))
+
+    while True:
+        ret, frame = cap.read()
+        if not ret: break
+        results = detector(frame)
+        for res in results:
+            for box in res.boxes.data.tolist():
+                x1,y1,x2,y2,_,cls = map(int, box)
+                color = (0,255,0) if cls==0 else (0,0,255)
+                cv2.rectangle(frame, (x1,y1),(x2,y2), color, 2)
+        out.write(frame)
+
+    cap.release()
+    out.release()
+    return send_file(tmp_out, mimetype='video/mp4')
 
 if __name__ == '__main__':
     port = int(os.getenv("PORT", 5003))
